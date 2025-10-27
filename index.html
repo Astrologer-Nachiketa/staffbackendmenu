@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Order Management Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: "Inter", sans-serif; background-color: #f7f9fb; }
+        /* Custom styles for status badges */
+        .status-Pending { background-color: #fef3c7; color: #b45309; }
+        .status-Ready { background-color: #d1fae5; color: #065f46; }
+        .status-Delivered { background-color: #dbeafe; color: #1e40af; }
+        .order-card:hover { transform: translateY(-3px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); }
+    </style>
+</head>
+<body class="p-4 md:p-8 min-h-screen">
+
+    <div class="max-w-6xl mx-auto">
+        <header class="flex justify-between items-center bg-white shadow-lg rounded-xl p-6 mb-8">
+            <div>
+                <h1 class="text-3xl font-extrabold text-indigo-700">Order Management Hub</h1>
+                <p class="text-gray-500">Real-time status updates for the last 50 orders.</p>
+            </div>
+            <button onclick="fetchOrders()" class="flex items-center space-x-2 px-4 py-2 bg-indigo-500 text-white font-bold rounded-lg shadow-md hover:bg-indigo-600 transition duration-150 ease-in-out">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 0012 4.07M12 12v6m0 0l-4-4m4 4l4-4m-4 4V12"></path></svg>
+                <span>Refresh (Auto: <span id="refreshTimer">30</span>s)</span>
+            </button>
+        </header>
+
+        <div id="ordersContainer" class="space-y-4">
+            <!-- Orders will be injected here -->
+            <div id="loadingMessage" class="text-center p-12 bg-white rounded-xl shadow-lg">
+                <p class="text-lg text-indigo-500 font-semibold">Loading orders...</p>
+            </div>
+        </div>
+
+        <!-- Modal for viewing order details -->
+        <div id="orderModal" class="fixed inset-0 bg-black bg-opacity-70 hidden items-center justify-center z-50">
+            <div class="bg-white p-6 rounded-xl shadow-2xl w-full max-w-lg transition-transform duration-300 transform scale-95">
+                <div class="flex justify-between items-center border-b pb-3 mb-4">
+                    <h3 class="text-2xl font-bold text-gray-800">Order Details (<span id="modalOrderId"></span>)</h3>
+                    <button onclick="closeModal()" class="text-gray-400 hover:text-gray-600">&times;</button>
+                </div>
+                <div id="modalContent" class="space-y-3 text-gray-700">
+                    <p><strong>Customer:</strong> <span id="modalCustomerName"></span> (<span id="modalTableNumber"></span>)</p>
+                    <p><strong>Total:</strong> <span id="modalGrandTotal" class="font-bold text-lg text-green-600"></span></p>
+                    <p><strong>Status:</strong> <span id="modalStatus" class="inline-block px-2 py-1 text-xs font-semibold rounded-full"></span></p>
+                    <div class="pt-4 border-t mt-4">
+                        <h4 class="font-bold text-gray-800 mb-2">Items:</h4>
+                        <ul id="modalItemsList" class="list-disc list-inside space-y-1 ml-4 text-sm"></ul>
+                    </div>
+                </div>
+                <div class="mt-6 flex justify-end space-x-3">
+                    <button onclick="closeModal()" class="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300">Close</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Loading Indicator for status updates -->
+        <div id="statusLoadingIndicator" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div class="bg-white p-6 rounded-lg shadow-2xl flex items-center space-x-3">
+                <svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span class="text-gray-700 font-semibold">Updating Status...</span>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // CRITICAL: Ensure this URL is your deployed Apps Script URL
+        const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbxAj5s6deUUfu4TWNlG6XcZVW6R7gwtUPthRtP-UIgh9a_QCU3KfQS0YaoVICQm-zZP/exec'; 
+        
+        let refreshInterval = 30; // Seconds
+        let intervalId;
+
+        // --- Utility Functions ---
+
+        /** * Safely toggles a loading indicator.
+         */
+        function toggleLoading(show, indicatorId = 'statusLoadingIndicator') {
+            const indicatorEl = document.getElementById(indicatorId);
+            if (indicatorEl) { 
+                indicatorEl.classList.toggle('hidden', !show);
+                indicatorEl.classList.toggle('flex', show);
+            }
+        }
+
+        function formatCurrency(amount) {
+            return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount);
+        }
+
+        function formatTimestamp(timestamp) {
+            return new Date(timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+        }
+
+        function getStatusClass(status) {
+            return `status-${status.replace(/\s/g, '')}`;
+        }
+
+        // --- Modal Logic ---
+
+        function openModal(order) {
+            document.getElementById('modalOrderId').textContent = order.orderId;
+            document.getElementById('modalCustomerName').textContent = order.customerName;
+            document.getElementById('modalTableNumber').textContent = order.tableNumber;
+            document.getElementById('modalGrandTotal').textContent = formatCurrency(order.grandTotal);
+            
+            const statusBadge = document.getElementById('modalStatus');
+            statusBadge.textContent = order.status;
+            statusBadge.className = getStatusClass(order.status) + ' inline-block px-2 py-1 text-xs font-semibold rounded-full';
+
+            const itemsList = document.getElementById('modalItemsList');
+            itemsList.innerHTML = '';
+            
+            try {
+                // Ensure the items are parsed correctly (handling single quote escape from HTML attribute)
+                const items = JSON.parse(order.orderItems.replace(/'/g, '"'));
+                items.forEach(item => {
+                    const li = document.createElement('li');
+                    li.textContent = `${item.quantity}x ${item.name} (${formatCurrency(item.price)})`;
+                    itemsList.appendChild(li);
+                });
+            } catch (e) {
+                const li = document.createElement('li');
+                li.textContent = `Items data unreadable or missing. Raw data: ${order.orderItems}`;
+                itemsList.appendChild(li);
+            }
+            
+            document.getElementById('orderModal').classList.add('flex');
+            document.getElementById('orderModal').classList.remove('hidden');
+        }
+
+        function closeModal() {
+            document.getElementById('orderModal').classList.add('hidden');
+            document.getElementById('orderModal').classList.remove('flex');
+        }
+
+
+        // --- Core API Functions ---
+
+        /** Fetches the list of recent orders from the Apps Script backend (doGet). */
+        async function fetchOrders() {
+            // Stop refresh timer during fetch
+            clearInterval(intervalId); 
+
+            const loadingMessageEl = document.getElementById('loadingMessage');
+            const ordersContainer = document.getElementById('ordersContainer');
+            
+            // Only show the loading message initially if no content is present
+            if (!ordersContainer.hasChildNodes() || (ordersContainer.children.length === 1 && ordersContainer.children[0].id === 'loadingMessage')) {
+                 if (loadingMessageEl) {
+                    loadingMessageEl.classList.remove('hidden');
+                 }
+            }
+
+
+            try {
+                const url = `${WEB_APP_URL}?action=getRecentOrders`;
+                const response = await fetch(url, { mode: 'cors' });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP Error: ${response.status} ${response.statusText}`);
+                }
+                
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    // Use the non-flickering render function
+                    renderOrders(result.orders);
+                } else {
+                    renderError(`Error fetching orders from script: ${result.message}`);
+                }
+            } catch (error) {
+                console.error(`FetchOrders failed: ${error.message}`, error);
+                renderError(`Failed to fetch orders. This usually means the Apps Script URL is wrong or the deployment needs permission/re-deployment. Error: ${error.message}`);
+            } finally {
+                // Hide loading message
+                if (loadingMessageEl) {
+                    loadingMessageEl.classList.add('hidden');
+                }
+                // Restart refresh timer
+                startAutoRefresh();
+            }
+        }
+
+        /** Sends a POST request to update the status of an order (doPost). */
+        async function updateStatus(orderId, newStatus) {
+            toggleLoading(true, 'statusLoadingIndicator');
+            
+            const payload = {
+                action: 'updateOrderStatus',
+                orderId: orderId,
+                newStatus: newStatus
+            };
+
+            try {
+                const response = await fetch(WEB_APP_URL, {
+                    method: 'POST',
+                    mode: 'cors', 
+                    body: JSON.stringify(payload)
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP Error: ${response.status} ${response.statusText}`);
+                }
+
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    console.log(result.message);
+                    // Refresh the list to show the updated status without full page reload
+                    await fetchOrders(); 
+                } else {
+                    console.error(`Status update failed: ${result.message}`);
+                    console.log(`Failed to update status: ${result.message}`); 
+                }
+            } catch (error) {
+                console.error('Network or parsing error during status update:', error);
+                console.log(`An error occurred during status update. Please check if your Google Apps Script is correctly deployed and published. Error: ${error.message}`);
+            } finally {
+                toggleLoading(false, 'statusLoadingIndicator');
+            }
+        }
+
+        // --- Non-Flickering Rendering Logic ---
+
+        // Helper function to create a new order card DOM element
+        function createOrderCard(order) {
+            const card = document.createElement('div');
+            card.className = 'order-card bg-white p-5 rounded-xl shadow-lg flex flex-col md:flex-row justify-between items-start md:items-center transition duration-200 ease-in-out border-l-4 border-indigo-500';
+            card.setAttribute('data-order-id', order.orderId);
+            
+            const infoDiv = document.createElement('div');
+            infoDiv.className = 'mb-4 md:mb-0 w-full md:w-1/2';
+            const actionDiv = document.createElement('div');
+            actionDiv.className = 'flex items-center space-x-3 w-full md:w-auto justify-between md:justify-end';
+
+            // 1. Order Info (Does not change)
+            // CRITICAL: The click handler is on this H2, making all orders' details accessible.
+            const orderDataString = JSON.stringify(order).replace(/"/g, "'");
+            infoDiv.innerHTML = `
+                <h2 class="text-xl font-bold text-indigo-700 cursor-pointer hover:text-indigo-900" onclick="openModal(${orderDataString})">#${order.orderId.substring(3)}</h2>
+                <p class="text-sm text-gray-600">Table/Device: <span class="font-semibold text-gray-800">${order.tableNumber || order.deviceId}</span></p>
+                <p class="text-xs text-gray-500">Placed: ${formatTimestamp(order.timestamp)}</p>
+            `;
+            card.appendChild(infoDiv);
+            card.appendChild(actionDiv);
+
+            // 2. Initial Status and Actions content
+            updateOrderCardContent(card, order); 
+
+            return card;
+        }
+
+        // Helper function to update/patch the dynamic content (status and buttons)
+        function updateOrderCardContent(cardElement, order) {
+            // Find the action div within the card
+            const actionDiv = cardElement.querySelector('.flex.items-center.space-x-3');
+            if (!actionDiv) return;
+
+            const currentStatus = order.status;
+            
+            // --- 1. Update Status Badge ---
+            let statusBadge = actionDiv.querySelector('span[class*="status-"]');
+            if (!statusBadge) {
+                statusBadge = document.createElement('span');
+                statusBadge.className = 'px-3 py-1 text-sm font-bold rounded-full min-w-[100px] text-center';
+            }
+            
+            statusBadge.textContent = currentStatus;
+            statusBadge.className = `px-3 py-1 text-sm font-bold rounded-full ${getStatusClass(currentStatus)} min-w-[100px] text-center`;
+
+            // --- 2. Update/Replace Action Buttons (Clear and rebuild to ensure correct state) ---
+            // Remove everything except the status badge before re-adding buttons
+            Array.from(actionDiv.children).forEach(child => {
+                if (child !== statusBadge) actionDiv.removeChild(child);
+            });
+            
+            // Add status badge back if it was removed in the previous loop (or if it was never in the DOM)
+            if (!actionDiv.contains(statusBadge)) {
+                actionDiv.prepend(statusBadge);
+            }
+
+
+            const btnReady = document.createElement('button');
+            btnReady.textContent = 'Ready';
+            btnReady.className = 'px-3 py-1 text-xs font-semibold rounded-lg bg-yellow-500 text-white hover:bg-yellow-600 transition disabled:opacity-50';
+            btnReady.disabled = currentStatus !== 'Pending';
+            btnReady.onclick = () => updateStatus(order.orderId, 'Ready');
+
+            const btnDelivered = document.createElement('button');
+            btnDelivered.textContent = 'Delivered';
+            btnDelivered.className = 'px-3 py-1 text-xs font-semibold rounded-lg bg-green-500 text-white hover:bg-green-600 transition disabled:opacity-50';
+            btnDelivered.disabled = currentStatus !== 'Ready';
+            btnDelivered.onclick = () => updateStatus(order.orderId, 'Delivered');
+
+            if (currentStatus === 'Pending') {
+                actionDiv.append(btnReady);
+            } else if (currentStatus === 'Ready') {
+                actionDiv.append(btnDelivered);
+            }
+            // If Delivered, only the status badge remains
+        }
+
+
+        /** Main rendering function that prevents screen flicker by patching the DOM. */
+        function renderOrders(newOrders) {
+            const container = document.getElementById('ordersContainer');
+            if (!container) return; 
+
+            // 1. Map order IDs from the new data for quick lookup
+            const newOrderIds = new Set(newOrders.map(o => o.orderId));
+            
+            // 2. Remove old orders (cards in DOM that are NOT in the new data)
+            Array.from(container.children).forEach(card => {
+                const orderId = card.getAttribute('data-order-id');
+                // Don't remove the loading message or any card not found in the new list
+                if (orderId && !newOrderIds.has(orderId)) {
+                    container.removeChild(card);
+                }
+            });
+
+            // 3. Re-insert/move elements to match the new order (newOrders is newest first)
+            // We iterate backwards through the new data (from oldest to newest) and use insertBefore
+            let referenceNode = null; 
+            for (let i = newOrders.length - 1; i >= 0; i--) { 
+                const order = newOrders[i];
+                const orderId = order.orderId;
+                let card = container.querySelector(`[data-order-id="${orderId}"]`);
+
+                if (card) {
+                    // Element exists: Update content and ensure position is correct
+                    updateOrderCardContent(card, order);
+                    if (card.nextSibling !== referenceNode) {
+                        container.insertBefore(card, referenceNode); // Move to the correct spot
+                    }
+                } else {
+                    // New element: Create and insert
+                    const newCard = createOrderCard(order);
+                    container.insertBefore(newCard, referenceNode);
+                    card = newCard; // Set card reference for the next loop iteration
+                }
+                
+                // The current card becomes the reference for the next, older card
+                referenceNode = card;
+            }
+            
+            // If the container has the 'No recent orders found' message, remove it if new orders arrive
+            if (newOrders.length > 0) {
+                const noOrdersMessage = container.querySelector('.text-lg.text-gray-500');
+                if (noOrdersMessage) {
+                    container.innerHTML = '';
+                    // Re-run the loop to populate the container correctly
+                    renderOrders(newOrders);
+                }
+            } else if (container.children.length === 0) {
+                // If the list is empty, display the "No orders" message
+                container.innerHTML = '<div class="text-center p-12 bg-white rounded-xl shadow-lg"><p class="text-lg text-gray-500">No recent orders found.</p></div>';
+            }
+        }
+
+
+        function renderError(message) {
+            const container = document.getElementById('ordersContainer');
+            if (!container) return; // Safety check
+
+            container.innerHTML = `<div class="text-center p-12 bg-red-100 rounded-xl shadow-lg border-2 border-red-500"><p class="text-lg text-red-700 font-semibold">Error: ${message}</p></div>`;
+        }
+
+        // --- Auto Refresh Logic ---
+
+        function updateTimer() {
+            let timerElement = document.getElementById('refreshTimer');
+            if (!timerElement) return; // Safety check
+
+            let remaining = parseInt(timerElement.textContent) - 1;
+
+            if (remaining < 0) {
+                remaining = refreshInterval;
+            }
+            timerElement.textContent = remaining;
+        }
+
+        function startAutoRefresh() {
+            // Clear any existing interval
+            if (intervalId) {
+                clearInterval(intervalId);
+            }
+            // Set the timer back to its max value
+            const timerElement = document.getElementById('refreshTimer');
+            if (timerElement) {
+                timerElement.textContent = refreshInterval;
+            }
+            
+            // Set up a new interval
+            intervalId = setInterval(() => {
+                updateTimer();
+                // Fetch right as the timer resets (e.g., when timer hits 29)
+                if (timerElement && parseInt(timerElement.textContent) === refreshInterval - 1) {
+                    fetchOrders();
+                }
+            }, 1000); // Update every second
+        }
+
+        // Initialize on page load
+        window.onload = function() {
+            fetchOrders();
+        };
+
+    </script>
+</body>
+</html>
