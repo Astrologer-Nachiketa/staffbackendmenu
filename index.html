@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Order Management Dashboard</title>
+    <!-- Load Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body { font-family: "Inter", sans-serif; background-color: #f7f9fb; }
@@ -12,6 +13,9 @@
         .status-Ready { background-color: #d1fae5; color: #065f46; }
         .status-Delivered { background-color: #dbeafe; color: #1e40af; }
         .order-card:hover { transform: translateY(-3px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); }
+        /* Tailwind classes to force modal display/hide */
+        .hidden { display: none !important; }
+        .flex { display: flex !important; }
     </style>
 </head>
 <body class="p-4 md:p-8 min-h-screen">
@@ -47,6 +51,27 @@
                     <p><strong>Total:</strong> <span id="modalGrandTotal" class="font-bold text-lg text-green-600"></span></p>
                     <p><strong>Status:</strong> <span id="modalStatus" class="inline-block px-2 py-1 text-xs font-semibold rounded-full"></span></p>
                     
+                    <!-- New Timestamps Section -->
+                    <div class="pt-2 border-t mt-4">
+                        <h4 class="font-bold text-gray-800 mb-1">Timestamps:</h4>
+                        <p class="ml-2 text-sm text-gray-600">
+                            <strong>Ready:</strong> <span id="modalReadyTimestamp" class="text-green-700 font-medium">N/A</span>
+                        </p>
+                        <p class="ml-2 text-sm text-gray-600">
+                            <strong>Delivered:</strong> <span id="modalDeliveredTimestamp" class="text-blue-700 font-medium">N/A</span>
+                        </p>
+                    </div>
+                    <!-- New Performance/Duration Section -->
+                    <div class="pt-2 border-t">
+                        <h4 class="font-bold text-gray-800 mb-1">Performance:</h4>
+                        <p class="ml-2 text-sm text-gray-600">
+                            <strong>Prep Time:</strong> <span id="modalPrepTime" class="font-medium text-amber-700">N/A</span>
+                        </p>
+                        <p class="ml-2 text-sm text-gray-600">
+                            <strong>Delivery Time:</strong> <span id="modalDeliveryTime" class="font-medium text-indigo-700">N/A</span>
+                        </p>
+                    </div>
+
                     <!-- General Instructions Container -->
                     <div id="generalInstructionsContainer" class="p-2 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm font-semibold hidden">
                         <span class="font-bold">GENERAL NOTE:</span> <span id="modalGeneralInstructions"></span>
@@ -78,15 +103,14 @@
 
     <script>
         // CRITICAL: Ensure this URL is your deployed Apps Script URL
-        const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyJ0feGSsGQg93-yvuXJLwj184Cd0efF19W9iRPdK_DzL1k6wZje3Ds1PGmVXFCELpj/exec'; 
+        const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbzuxKmKEKaLnNPf72XWYOd850QI2biDk2Z8KyDo5mhVvhYow3uMOhaaEuTCWFUYAPsq/exec'; 
         
         let refreshInterval = 30; // Seconds
         let intervalId;
 
         // --- Utility Functions ---
 
-        /** * Safely toggles a loading indicator.
-         */
+        /** Safely toggles a loading indicator. */
         function toggleLoading(show, indicatorId = 'statusLoadingIndicator') {
             const indicatorEl = document.getElementById(indicatorId);
             if (indicatorEl) { 
@@ -104,12 +128,48 @@
             return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(numAmount);
         }
 
+        /** Formats a timestamp string into a readable time and date string. */
         function formatTimestamp(timestamp) {
-            return new Date(timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+            if (!timestamp) return 'N/A';
+            const date = new Date(timestamp);
+            const time = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+            const dateStr = date.toLocaleDateString('en-US');
+            return `${time} (${dateStr})`;
         }
 
         function getStatusClass(status) {
             return `status-${status.replace(/\s/g, '')}`;
+        }
+        
+        /** Converts milliseconds into a readable "M mins S secs" string. */
+        function formatDuration(ms) {
+            if (ms === null || isNaN(ms) || ms < 0) return 'N/A';
+            const seconds = Math.floor(ms / 1000);
+            const minutes = Math.floor(seconds / 60);
+            const remainingSeconds = seconds % 60;
+            
+            if (minutes === 0) {
+                return `${remainingSeconds} secs`;
+            }
+            return `${minutes} mins ${remainingSeconds} secs`;
+        }
+
+        /** Calculates the time difference between two timestamps and returns a formatted duration. */
+        function calculateDuration(startTimestamp, endTimestamp) {
+            if (!startTimestamp || !endTimestamp) return 'N/A';
+
+            try {
+                const startTime = new Date(startTimestamp).getTime();
+                const endTime = new Date(endTimestamp).getTime();
+
+                if (isNaN(startTime) || isNaN(endTime)) return 'N/A';
+
+                const durationMs = endTime - startTime;
+                return formatDuration(durationMs);
+            } catch (e) {
+                console.error("Error calculating duration:", e);
+                return 'N/A';
+            }
         }
 
         // --- Modal Logic ---
@@ -117,22 +177,33 @@
         function openModal(order) {
             document.getElementById('modalOrderId').textContent = order.orderId;
             document.getElementById('modalCustomerName').textContent = order.customerName;
-            document.getElementById('modalTableNumber').textContent = order.tableNumber;
+            // Use 'Table N/A' if tableNumber is empty
+            document.getElementById('modalTableNumber').textContent = order.tableNumber || 'Table N/A'; 
             document.getElementById('modalGrandTotal').textContent = formatCurrency(order.grandTotal);
             
             const statusBadge = document.getElementById('modalStatus');
             statusBadge.textContent = order.status;
             statusBadge.className = getStatusClass(order.status) + ' inline-block px-2 py-1 text-xs font-semibold rounded-full';
 
-            // General Instructions Logic (DEFENSIVE CHECK)
+            // 1. Update Timestamp fields (New Code)
+            document.getElementById('modalReadyTimestamp').textContent = formatTimestamp(order.readyTimestamp);
+            document.getElementById('modalDeliveredTimestamp').textContent = formatTimestamp(order.deliveredTimestamp);
+            
+            // 2. Update Performance/Duration fields (New Code)
+            const prepTime = calculateDuration(order.timestamp, order.readyTimestamp);
+            const deliveryTime = calculateDuration(order.readyTimestamp, order.deliveredTimestamp);
+            
+            document.getElementById('modalPrepTime').textContent = prepTime;
+            document.getElementById('modalDeliveryTime').textContent = deliveryTime;
+
+            // General Instructions Logic
             const instructionsContainer = document.getElementById('generalInstructionsContainer');
             const instructionsText = document.getElementById('modalGeneralInstructions');
             
-            // Check for the new key (generalInstructions) and other possible variations
             const generalInstructions = 
-                order.generalInstructions ||    // Key explicitly added by the new Code.gs
-                order.General_Instructions ||   // Exact spreadsheet header
-                order.general_instructions ||   // Lower snake_case conversion
+                order.generalInstructions ||    
+                order.General_Instructions ||   
+                order.general_instructions ||   
                 '';
 
             if (generalInstructions.trim() !== '') {
@@ -147,7 +218,7 @@
             itemsList.innerHTML = '';
             
             try {
-                // Ensure the items are parsed correctly (handling single quote escape from HTML attribute)
+                // Parse orderItems and replace single quotes with double quotes for JSON parsing
                 const items = JSON.parse(order.orderItems.replace(/'/g, '"'));
                 
                 items.forEach(item => {
@@ -214,7 +285,7 @@
             // Only show the loading message initially if no content is present
             if (!ordersContainer.hasChildNodes() || (ordersContainer.children.length === 1 && ordersContainer.children[0].id === 'loadingMessage')) {
                  if (loadingMessageEl) {
-                    loadingMessageEl.classList.remove('hidden');
+                     loadingMessageEl.classList.remove('hidden');
                  }
             }
 
@@ -305,8 +376,8 @@
             const orderDataString = JSON.stringify(order).replace(/"/g, "'");
             infoDiv.innerHTML = `
                 <h2 class="text-xl font-bold text-indigo-700 cursor-pointer hover:text-indigo-900" onclick="openModal(${orderDataString})">#${order.orderId.substring(3)}</h2>
-                <p class="text-sm text-gray-600">Table/Device: <span class="font-semibold text-gray-800">${order.tableNumber || order.deviceId}</span></p>
-                <p class="text-xs text-gray-500">Placed: ${formatTimestamp(order.timestamp)}</p>
+                <p class="text-sm text-gray-600">Customer: <span class="font-semibold text-gray-800">${order.customerName}</span></p>
+                <p class="text-xs text-gray-500">Placed: ${formatTimestamp(order.timestamp).split(' ')[0]}</p>
             `;
             card.appendChild(infoDiv);
             card.appendChild(actionDiv);
@@ -414,12 +485,19 @@
             if (newOrders.length > 0) {
                 const noOrdersMessage = container.querySelector('.text-lg.text-gray-500');
                 if (noOrdersMessage) {
-                    container.innerHTML = '';
-                    // Re-run the loop to populate the container correctly
-                    renderOrders(newOrders);
+                    // Check if the only child is the placeholder message
+                    if (container.children.length === 1 && container.children[0].textContent.includes('No recent orders found')) {
+                        container.innerHTML = ''; // Clear only if it contains the placeholder
+                        // Re-run the loop to populate the container correctly after clearing
+                        // Note: This recursive call is safe because newOrders.length > 0
+                        renderOrders(newOrders);
+                    }
                 }
-            } else if (container.children.length === 0) {
-                // If the list is empty, display the "No orders" message
+            } else if (container.children.length === 0 || (container.children.length === 1 && container.children[0].id === 'loadingMessage')) {
+                // If the list is empty (or only contains the loading message), display the "No orders" message
+                if (document.getElementById('loadingMessage')) {
+                    document.getElementById('loadingMessage').classList.add('hidden');
+                }
                 container.innerHTML = '<div class="text-center p-12 bg-white rounded-xl shadow-lg"><p class="text-lg text-gray-500">No recent orders found.</p></div>';
             }
         }
